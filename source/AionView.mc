@@ -25,7 +25,6 @@ class AionView extends WatchUi.WatchFace {
     var _statusFont;
     var _weather = null;
     var _lastRead = null;
-    var _forecastFallback = false;
 
     function initialize() { WatchFace.initialize(); }
     function onLayout(dc) {
@@ -110,7 +109,8 @@ class AionView extends WatchUi.WatchFace {
         text(dc, 231, 254, degrees(w[:high]) + " / " + degrees(w[:low]), _smallFont, COLOR_CYAN);
         text(dc, 351, 233, sentenceCase(w[:sunLabel]), _labelFont, COLOR_MUTED);
         text(dc, 351, 254, w[:sunTime], _smallFont, COLOR_WARM);
-        drawForecast(dc, w[:hours]);
+        var visibleHours = futureHours(w[:hours], now.value());
+        drawForecast(dc, visibleHours);
         // A quiet divider leaves these secondary readings on the black face.
         line(dc, 105, 381, 349, 381, COLOR_PANEL, 1);
         var labels = ["Humidity", "Dew", "hPa", "Cloud"];
@@ -122,20 +122,17 @@ class AionView extends WatchUi.WatchFace {
         }
         var age = "Weather unavailable";
         var ageColor = COLOR_MUTED;
-        if (w[:sample]) { age = "Sample weather"; ageColor = COLOR_MUTED; }
-        else if (w[:observed] != null) {
-            var minutes = clamp((now.value() - w[:observed]) / 60, 0, 99999).toNumber();
-            age = "Updated " + minutes.toString() + "m ago";
-            if (minutes >= 60 || w[:conditionsCached]) { ageColor = COLOR_WARM; }
-            if (w[:conditionsCached]) { age = "Cached conditions " + minutes.toString() + "m old"; }
-        }
-        if (_forecastFallback && w[:hours].size() > 0) {
-            age = (w[:observed] != null ? age + " | " : "") + "Forecast cached";
-            ageColor = COLOR_WARM;
-        }
-        if (!w[:sample] && w[:forecastCached]) {
-            age = "Forecast cached | " + age;
-            ageColor = COLOR_WARM;
+        if (w[:sample]) { age = "Sample weather"; }
+        else {
+            if (w[:observed] != null) {
+                var minutes = clamp((now.value() - w[:observed]) / 60, 0, 99999).toNumber();
+                age = (w[:conditionsCached] ? "Cached " : "Observed ") + minutes.toString() + "m ago";
+                if (minutes >= 60 || w[:conditionsCached]) { ageColor = COLOR_WARM; }
+            }
+            if (w[:forecastCached] && visibleHours.size() > 0) {
+                age = (w[:observed] != null ? age + " | " : "") + "Forecast cached";
+                ageColor = COLOR_WARM;
+            }
         }
         text(dc, 227, 436, age, _statusFont, ageColor);
     }
@@ -320,6 +317,27 @@ class AionView extends WatchUi.WatchFace {
             for (var r = 0; r < 3; r += 1) { line(dc, x - 12 + r * 13, y + 13, x - 16 + r * 13, y + 23, COLOR_BLUE, 2); }
         }
     }
+    // Only the display is filtered, so elapsed hours disappear between API reads.
+    function futureHours(hours, now) {
+        var visible = [];
+        for (var i = 0; i < hours.size(); i += 1) {
+            if (hours[i][:at] == null || hours[i][:at] >= now) {
+                visible.add(hours[i]);
+            }
+        }
+        return visible;
+    }
+    // Same future-hour payload means Garmin may still be serving the same snapshot.
+    // Don't restart the cache fallback TTL just because the API returned it again.
+    function sameForecast(previousHours, hours) {
+        if (previousHours.size() != hours.size()) { return false; }
+        for (var i = 0; i < hours.size(); i += 1) {
+            if (previousHours[i][:at] != hours[i][:at] ||
+                previousHours[i][:temp] != hours[i][:temp] ||
+                previousHours[i][:rain] != hours[i][:rain]) { return false; }
+        }
+        return true;
+    }
     function drawForecast(dc, hours) {
         text(dc, 134, 280, "Hourly temperature", _labelFont, COLOR_CYAN);
         text(dc, 343, 280, "Rain %", _labelFont, COLOR_BLUE);
@@ -412,13 +430,25 @@ class AionView extends WatchUi.WatchFace {
                                        :label=>date.hour.format("%02d"), :at=>h.forecastTime.value()});
                     }
                 }
-                if (w[:hours].size() > 0) { w[:forecastFetchedAt] = now; }
+                if (w[:hours].size() > 0) {
+                    // Compare overlapping future hours: dropping an elapsed hour
+                    // by itself does not constitute newly published forecast data.
+                    if (previous != null && previous[:forecastFetchedAt] != null &&
+                        sameForecast(futureHours(previous[:hours], now), w[:hours])) {
+                        w[:forecastFetchedAt] = previous[:forecastFetchedAt];
+                    } else {
+                        w[:forecastFetchedAt] = now;
+                    }
+                    if (now - w[:forecastFetchedAt] > 5400) {
+                        w[:forecastCached] = true;
+                    }
+                }
             } catch (ex) {
                 System.println("Aion forecast processing: " + ex.toString());
                 w[:hours] = [];
             }
         }
-        // Keep future-only forecast entries for up to 90 minutes.
+        // Keep future-only forecast entries for up to 90 minutes after the last distinct snapshot.
         if (w[:hours].size() == 0 && previous != null &&
             previous[:forecastFetchedAt] != null &&
             now >= previous[:forecastFetchedAt] && now - previous[:forecastFetchedAt] <= 5400) {
