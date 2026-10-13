@@ -126,10 +126,15 @@ class AionView extends WatchUi.WatchFace {
         else if (w[:observed] != null) {
             var minutes = clamp((now.value() - w[:observed]) / 60, 0, 99999).toNumber();
             age = "Updated " + minutes.toString() + "m ago";
-            if (minutes >= 60) { ageColor = COLOR_WARM; }
+            if (minutes >= 60 || w[:conditionsCached]) { ageColor = COLOR_WARM; }
+            if (w[:conditionsCached]) { age = "Cached conditions " + minutes.toString() + "m old"; }
         }
         if (_forecastFallback && w[:hours].size() > 0) {
             age = (w[:observed] != null ? age + " | " : "") + "Forecast cached";
+            ageColor = COLOR_WARM;
+        }
+        if (!w[:sample] && w[:forecastCached]) {
+            age = "Forecast cached | " + age;
             ageColor = COLOR_WARM;
         }
         text(dc, 227, 436, age, _statusFont, ageColor);
@@ -353,68 +358,81 @@ class AionView extends WatchUi.WatchFace {
         }
     }
     function emptyWeather() {
-        return {:temperature=>null, :feels=>null, :condition=>null, :high=>null, :low=>null, :wind=>null, :bearing=>null, :humidity=>null, :dew=>null, :pressure=>null, :cloud=>null, :observed=>null, :sunrise=>null, :sunset=>null, :sunLabel=>"SUNSET", :sunTime=>"--", :hours=>[], :sample=>false};
+        return {:temperature=>null, :feels=>null, :condition=>null, :high=>null, :low=>null, :wind=>null, :bearing=>null, :humidity=>null, :dew=>null, :pressure=>null, :cloud=>null, :observed=>null, :sunrise=>null, :sunset=>null, :sunLabel=>"SUNSET", :sunTime=>"--", :hours=>[], :sample=>false, :conditionsCached=>false, :forecastCached=>false, :forecastFetchedAt=>null};
     }
     function keepValue(w, key, value) {
         if (value != null) { w[key] = value; }
     }
+    // Garmin's conditions and hourly forecast caches can fail independently.
     (:live)
     function readWeather() {
-        // Keep previous readings when Garmin briefly returns null.
-        var w = _weather;
-        if (w == null) { w = emptyWeather(); }
-        var location = null;
-        try {
-            var c = Weather.getCurrentConditions();
-            if (c != null) {
-                keepValue(w, :temperature, c.temperature);
-                keepValue(w, :feels, c.feelsLikeTemperature);
-                keepValue(w, :condition, c.condition);
-                keepValue(w, :high, c.highTemperature);
-                keepValue(w, :low, c.lowTemperature);
-                keepValue(w, :wind, c.windSpeed);
-                keepValue(w, :bearing, c.windBearing);
-                keepValue(w, :humidity, c.relativeHumidity);
-                keepValue(w, :dew, c.dewPoint);
-                keepValue(w, :cloud, c.cloudCover);
-                if (c.pressure != null) { w[:pressure] = c.pressure / 100.0; }
-                if (c.observationTime != null) { w[:observed] = c.observationTime.value(); }
-                location = c.observationLocationPosition;
-            }
-        } catch (ex) { System.println("Aion: current conditions read failed " + ex.toString()); }
-        // Sunrise calculations must not invalidate a successful conditions read.
-        try {
-            if (location != null) { setSun(w, location); }
-        } catch (ex) { System.println("Aion: sun times read failed " + ex.toString()); }
-
+        var w = emptyWeather();
         var now = Time.now().value();
-        var cached = [];
-        // Never display expired forecast hours, even during an outage.
-        for (var j = 0; j < w[:hours].size(); j += 1) {
-            var previous = w[:hours][j];
-            if (previous[:time] != null && previous[:time] >= now) {
-                cached.add(previous);
+        var previous = _weather;
+        var c = null;
+        try { c = Weather.getCurrentConditions(); }
+        catch (ex) { System.println("Aion current conditions: " + ex.toString()); }
+        if (c != null) {
+            w[:temperature] = c.temperature; w[:feels] = c.feelsLikeTemperature;
+            w[:condition] = c.condition; w[:high] = c.highTemperature; w[:low] = c.lowTemperature;
+            w[:wind] = c.windSpeed; w[:bearing] = c.windBearing; w[:humidity] = c.relativeHumidity;
+            w[:dew] = c.dewPoint; w[:cloud] = c.cloudCover;
+            if (c.pressure != null) { w[:pressure] = c.pressure / 100.0; }
+            if (c.observationTime != null) { w[:observed] = c.observationTime.value(); }
+            try { setSun(w, c.observationLocationPosition); }
+            catch (ex) { System.println("Aion sunrise/sunset: " + ex.toString()); }
+        }
+        // Keep prior data for at most three hours, including partial responses.
+        if (previous != null && previous[:observed] != null &&
+            now >= previous[:observed] && now - previous[:observed] <= 10800) {
+            var keys = [:temperature, :feels, :condition, :high, :low,
+                        :wind, :bearing, :humidity, :dew, :pressure, :cloud];
+            for (var k = 0; k < keys.size(); k += 1) {
+                var key = keys[k];
+                if (w[key] == null && previous[key] != null) {
+                    w[key] = previous[key];
+                    w[:conditionsCached] = true;
+                }
+            }
+            if (w[:observed] == null) {
+                w[:observed] = previous[:observed];
+                w[:conditionsCached] = true;
             }
         }
-        w[:hours] = cached;
-        _forecastFallback = true;
-        try {
-            var forecast = Weather.getHourlyForecast();
-            if (forecast != null) {
-                var upcoming = [];
-                for (var i = 0; i < forecast.size() && upcoming.size() < 6; i += 1) {
+        var forecast = null;
+        try { forecast = Weather.getHourlyForecast(); }
+        catch (ex) { System.println("Aion hourly forecast: " + ex.toString()); }
+        if (forecast != null) {
+            try {
+                for (var i = 0; i < forecast.size() && w[:hours].size() < 6; i += 1) {
                     var h = forecast[i];
-                    if (h != null && h.forecastTime != null && h.forecastTime.value() >= now) {
+                    if (h.forecastTime != null && h.forecastTime.value() >= now) {
                         var date = Gregorian.info(h.forecastTime, Time.FORMAT_SHORT);
-                        upcoming.add({:temp=>h.temperature, :rain=>h.precipitationChance, :label=>date.hour.format("%02d"), :time=>h.forecastTime.value()});
+                        w[:hours].add({:temp=>h.temperature, :rain=>h.precipitationChance,
+                                       :label=>date.hour.format("%02d"), :at=>h.forecastTime.value()});
                     }
                 }
-                if (upcoming.size() > 0) {
-                    w[:hours] = upcoming;
-                    _forecastFallback = false;
+                if (w[:hours].size() > 0) { w[:forecastFetchedAt] = now; }
+            } catch (ex) {
+                System.println("Aion forecast processing: " + ex.toString());
+                w[:hours] = [];
+            }
+        }
+        // Keep future-only forecast entries for up to 90 minutes.
+        if (w[:hours].size() == 0 && previous != null &&
+            previous[:forecastFetchedAt] != null &&
+            now >= previous[:forecastFetchedAt] && now - previous[:forecastFetchedAt] <= 5400) {
+            var oldHours = previous[:hours];
+            for (var j = 0; j < oldHours.size(); j += 1) {
+                if (oldHours[j][:at] != null && oldHours[j][:at] >= now) {
+                    w[:hours].add(oldHours[j]);
                 }
             }
-        } catch (ex) { System.println("Aion: hourly forecast read failed " + ex.toString()); }
+            if (w[:hours].size() > 0) {
+                w[:forecastFetchedAt] = previous[:forecastFetchedAt];
+                w[:forecastCached] = true;
+            }
+        }
         return w;
     }
     function setSun(w, location) {
