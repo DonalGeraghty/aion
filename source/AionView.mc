@@ -25,6 +25,11 @@ class AionView extends WatchUi.WatchFace {
     var _statusFont;
     var _weather = null;
     var _lastRead = null;
+    // Allocate fixed lookup tables once rather than during every redraw.
+    var _directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    var _secondaryLabels = ["Humidity", "Dew", "hPa", "Cloud"];
+    var _conditionNames = ["CLEAR", "PARTLY CLOUDY", "MOSTLY CLOUDY", "RAIN", "SNOW", "WINDY", "THUNDERSTORMS", "WINTRY MIX", "FOG", "HAZY", "HAIL", "SCATTERED SHOWERS", "SCATTERED STORMS", "PRECIPITATION", "LIGHT RAIN", "HEAVY RAIN", "LIGHT SNOW", "HEAVY SNOW", "LIGHT RAIN / SNOW", "HEAVY RAIN / SNOW", "CLOUDY", "RAIN / SNOW", "PARTLY CLEAR", "MOSTLY CLEAR", "LIGHT SHOWERS", "SHOWERS", "HEAVY SHOWERS", "CHANCE OF SHOWERS", "CHANCE OF STORMS", "MIST", "DUST", "DRIZZLE", "TORNADO", "SMOKE", "ICE", "SAND", "SQUALL", "SANDSTORM", "VOLCANIC ASH", "HAZE", "FAIR", "HURRICANE", "TROPICAL STORM", "CHANCE OF SNOW", "CHANCE OF RAIN / SNOW", "CLOUDY / RAIN", "CLOUDY / SNOW", "CLOUDY / RAIN / SNOW", "FLURRIES", "FREEZING RAIN", "SLEET", "ICE / SNOW", "THIN CLOUDS", "UNKNOWN"];
+    var _sunCache = null;
 
     function initialize() { WatchFace.initialize(); }
     function onLayout(dc) {
@@ -97,27 +102,27 @@ class AionView extends WatchUi.WatchFace {
         }
         var w = _weather;
         if (w == null) { w = emptyWeather(); }
+        if (w[:display] == null) { formatWeather(w); }
         drawCondition(dc, 111, 165, w[:condition], isNight(w));
-        text(dc, 216, 163, degrees(w[:temperature]), _tempFont, COLOR_CYAN);
+        text(dc, 216, 163, w[:display][:temperature], _tempFont, COLOR_CYAN);
         text(dc, 339, 150, "Feels like", _labelFont, COLOR_MUTED);
-        text(dc, 339, 174, degrees(w[:feels]), _valueFont, COLOR_CYAN);
-        text(dc, 227, 202, sentenceCase(conditionName(w[:condition])), _smallFont, COLOR_MUTED);
+        text(dc, 339, 174, w[:display][:feels], _valueFont, COLOR_CYAN);
+        text(dc, 227, 202, w[:display][:condition], _smallFont, COLOR_MUTED);
         panel(dc, 43, 220, 368, 48);
         text(dc, 108, 233, "Wind km/h", _labelFont, COLOR_MUTED);
         drawWind(dc, w);
         text(dc, 231, 233, "High / low", _labelFont, COLOR_MUTED);
-        text(dc, 231, 254, degrees(w[:high]) + " / " + degrees(w[:low]), _smallFont, COLOR_CYAN);
-        text(dc, 351, 233, sentenceCase(w[:sunLabel]), _labelFont, COLOR_MUTED);
+        text(dc, 231, 254, w[:display][:highLow], _smallFont, COLOR_CYAN);
+        text(dc, 351, 233, w[:display][:sunLabel], _labelFont, COLOR_MUTED);
         text(dc, 351, 254, w[:sunTime], _smallFont, COLOR_WARM);
         var visibleHours = futureHours(w[:hours], now.value());
         drawForecast(dc, visibleHours);
         // A quiet divider leaves these secondary readings on the black face.
         line(dc, 105, 381, 349, 381, COLOR_PANEL, 1);
-        var labels = ["Humidity", "Dew", "hPa", "Cloud"];
-        var values = [number(w[:humidity], "%"), degrees(w[:dew]), number(w[:pressure], ""), number(w[:cloud], "%")];
+        var values = w[:display][:secondary];
         for (var i = 0; i < 4; i += 1) {
             var x = 125 + i * 68;
-            text(dc, x, 392, labels[i], _labelFont, COLOR_MUTED);
+            text(dc, x, 392, _secondaryLabels[i], _labelFont, COLOR_MUTED);
             text(dc, x, 412, values[i], _smallFont, COLOR_DETAIL);
         }
         var age = "Weather unavailable";
@@ -153,15 +158,14 @@ class AionView extends WatchUi.WatchFace {
     function windText(w) {
         if (w[:wind] == null) { return "--"; }
         if (w[:wind] < 0.14) { return "Calm"; }
-        var directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
         var direction = "";
-        if (w[:bearing] != null) { direction = directions[((normalizedBearing(w[:bearing]) + 22.5) / 45).toNumber() % 8] + " "; }
+        if (w[:bearing] != null) { direction = _directions[((normalizedBearing(w[:bearing]) + 22.5) / 45).toNumber() % 8] + " "; }
         return direction + number(w[:wind].toFloat() * 3.6, "");
     }
     function normalizedBearing(bearing) { return ((bearing % 360) + 360) % 360; }
     function drawWind(dc, w) {
         var hasArrow = w[:wind] != null && w[:wind] >= 0.14 && w[:bearing] != null;
-        text(dc, hasArrow ? 122 : 108, 254, windText(w), _smallFont, COLOR_TEXT);
+        text(dc, hasArrow ? 122 : 108, 254, w[:display][:wind], _smallFont, COLOR_TEXT);
         if (!hasArrow) { return; }
         // Match the compass bearing beside the speed: north points up.
         var angle = normalizedBearing(w[:bearing]) * Math.PI / 180;
@@ -185,8 +189,8 @@ class AionView extends WatchUi.WatchFace {
     }
     function conditionName(condition) {
         if (condition == null || condition < 0 || condition > 53) { return "CONDITIONS UNAVAILABLE"; }
-        var names = ["CLEAR", "PARTLY CLOUDY", "MOSTLY CLOUDY", "RAIN", "SNOW", "WINDY", "THUNDERSTORMS", "WINTRY MIX", "FOG", "HAZY", "HAIL", "SCATTERED SHOWERS", "SCATTERED STORMS", "PRECIPITATION", "LIGHT RAIN", "HEAVY RAIN", "LIGHT SNOW", "HEAVY SNOW", "LIGHT RAIN / SNOW", "HEAVY RAIN / SNOW", "CLOUDY", "RAIN / SNOW", "PARTLY CLEAR", "MOSTLY CLEAR", "LIGHT SHOWERS", "SHOWERS", "HEAVY SHOWERS", "CHANCE OF SHOWERS", "CHANCE OF STORMS", "MIST", "DUST", "DRIZZLE", "TORNADO", "SMOKE", "ICE", "SAND", "SQUALL", "SANDSTORM", "VOLCANIC ASH", "HAZE", "FAIR", "HURRICANE", "TROPICAL STORM", "CHANCE OF SNOW", "CHANCE OF RAIN / SNOW", "CLOUDY / RAIN", "CLOUDY / SNOW", "CLOUDY / RAIN / SNOW", "FLURRIES", "FREEZING RAIN", "SLEET", "ICE / SNOW", "THIN CLOUDS", "UNKNOWN"];
-        return names[condition];
+
+        return _conditionNames[condition];
     }
     function conditionStyle(condition) {
         if (condition == null) { return :unknown; }
@@ -364,19 +368,37 @@ class AionView extends WatchUi.WatchFace {
                 dc.fillCircle(x * _scale, y * _scale, 3 * _scale);
                 previousX = x; previousY = y;
             } else { previousX = null; }
-            text(dc, x, 295, degrees(h[:temp]), _labelFont, COLOR_CYAN);
+            text(dc, x, 295, h[:tempText], _labelFont, COLOR_CYAN);
             if (h[:rain] != null) {
                 var height = clamp(h[:rain], 0, 100) * 0.20;
                 // A zero chance leaves the rain track empty.
                 dc.setColor(COLOR_BLUE, Graphics.COLOR_TRANSPARENT);
                 if (height > 0) { dc.fillRoundedRectangle((x - 9) * _scale, (343 - height) * _scale, 18 * _scale, height * _scale, 2 * _scale); }
             }
-            text(dc, x, 353, number(h[:rain], ""), _labelFont, COLOR_BLUE);
+            text(dc, x, 353, h[:rainText], _labelFont, COLOR_BLUE);
             text(dc, x, 371, h[:label] + "h", _labelFont, COLOR_MUTED);
         }
     }
+    // Weather-only strings are prepared on refresh, never on normal redraw.
+    function formatWeather(w) {
+        var hours = w[:hours];
+        for (var i = 0; i < hours.size(); i += 1) {
+            hours[i][:tempText] = degrees(hours[i][:temp]);
+            hours[i][:rainText] = number(hours[i][:rain], "");
+        }
+        w[:display] = {
+            :temperature=>degrees(w[:temperature]),
+            :feels=>degrees(w[:feels]),
+            :condition=>sentenceCase(conditionName(w[:condition])),
+            :highLow=>degrees(w[:high]) + " / " + degrees(w[:low]),
+            :wind=>windText(w),
+            :sunLabel=>sentenceCase(w[:sunLabel]),
+            :secondary=>[number(w[:humidity], "%"), degrees(w[:dew]),
+                         number(w[:pressure], ""), number(w[:cloud], "%")]
+        };
+    }
     function emptyWeather() {
-        return {:temperature=>null, :feels=>null, :condition=>null, :high=>null, :low=>null, :wind=>null, :bearing=>null, :humidity=>null, :dew=>null, :pressure=>null, :cloud=>null, :observed=>null, :sunrise=>null, :sunset=>null, :sunLabel=>"SUNSET", :sunTime=>"--", :hours=>[], :sample=>false, :conditionsCached=>false, :forecastCached=>false, :forecastFetchedAt=>null};
+        return {:temperature=>null, :feels=>null, :condition=>null, :high=>null, :low=>null, :wind=>null, :bearing=>null, :humidity=>null, :dew=>null, :pressure=>null, :cloud=>null, :observed=>null, :sunrise=>null, :sunset=>null, :sunLabel=>"SUNSET", :sunTime=>"--", :sunEventAt=>null, :hours=>[], :sample=>false, :conditionsCached=>false, :forecastCached=>false, :forecastFetchedAt=>null, :display=>null};
     }
     function keepValue(w, key, value) {
         if (value != null) { w[key] = value; }
@@ -397,7 +419,7 @@ class AionView extends WatchUi.WatchFace {
             w[:dew] = c.dewPoint; w[:cloud] = c.cloudCover;
             if (c.pressure != null) { w[:pressure] = c.pressure / 100.0; }
             if (c.observationTime != null) { w[:observed] = c.observationTime.value(); }
-            try { setSun(w, c.observationLocationPosition); }
+            try { setSunCached(w, c.observationLocationPosition); }
             catch (ex) { System.println("Aion sunrise/sunset: " + ex.toString()); }
         }
         // Keep prior data for at most three hours, including partial responses.
@@ -463,7 +485,31 @@ class AionView extends WatchUi.WatchFace {
                 w[:forecastCached] = true;
             }
         }
+        formatWeather(w);
         return w;
+    }
+    // Recompute astronomical data only when the local date or location changes.
+    // Keep a copy of the computed daily event across normal weather refreshes.
+    function setSunCached(w, location) {
+        if (location == null) { return; }
+        var today = Gregorian.info(Time.now(), Time.FORMAT_MEDIUM);
+        var coordinates = location.toDegrees();
+        var key = today.year.toString() + "-" + today.month.toString() + "-" +
+                  today.day.toString() + ":" + coordinates[0].toString() + ":" +
+                  coordinates[1].toString();
+        if (_sunCache != null && _sunCache[:key] == key &&
+            _sunCache[:eventAt] != null && Time.now().value() < _sunCache[:eventAt]) {
+            w[:sunrise] = _sunCache[:sunrise];
+            w[:sunset] = _sunCache[:sunset];
+            w[:sunLabel] = _sunCache[:sunLabel];
+            w[:sunTime] = _sunCache[:sunTime];
+            w[:sunEventAt] = _sunCache[:eventAt];
+            return;
+        }
+        setSun(w, location);
+        _sunCache = {:key=>key, :sunrise=>w[:sunrise], :sunset=>w[:sunset],
+                     :sunLabel=>w[:sunLabel], :sunTime=>w[:sunTime],
+                     :eventAt=>w[:sunEventAt]};
     }
     function setSun(w, location) {
         if (location == null) { return; }
@@ -479,6 +525,7 @@ class AionView extends WatchUi.WatchFace {
         if (event != null) {
             var date = Gregorian.info(event, Time.FORMAT_SHORT);
             w[:sunTime] = date.hour.format("%02d") + ":" + date.min.format("%02d");
+            w[:sunEventAt] = event.value();
         }
     }
     (:preview)
@@ -492,6 +539,7 @@ class AionView extends WatchUi.WatchFace {
         var rain = [10, 20, 35, 65, 80, 40];
         var hour = System.getClockTime().hour;
         for (var i = 0; i < 6; i += 1) { w[:hours].add({:temp=>temperatures[i], :rain=>rain[i], :label=>((hour + i + 1) % 24).format("%02d")}); }
+        formatWeather(w);
         return w;
     }
     function onEnterSleep() { _lowPower = true; WatchUi.requestUpdate(); }
