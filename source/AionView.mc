@@ -86,7 +86,7 @@ class AionView extends WatchUi.WatchFace {
             return;
         }
         var date = Gregorian.info(now, Time.FORMAT_MEDIUM);
-        if (_lastRead == null || now.value() - _lastRead >= 60) {
+        if (_lastRead == null || now.value() - _lastRead >= 900) {
             _weather = readWeather();
             _lastRead = now.value();
         }
@@ -465,5 +465,5 @@ class AionView extends WatchUi.WatchFace {
         return w;
     }
     function onEnterSleep() { _lowPower = true; WatchUi.requestUpdate(); }
-    function onExitSleep() { _lowPower = false; _lastRead = null; WatchUi.requestUpdate(); }
+    function onExitSleep() { _lowPower = false; WatchUi.requestUpdate(); }
 }
