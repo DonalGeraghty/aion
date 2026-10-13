@@ -1,0 +1,19 @@
+# Garmin Connect IQ build output
+bin/
+*.prg
+*.iq
+*.debug.xml
+
+# Developer signing keys
+*.der
+*.pem
+developer_key*
+
+# Local environment files
+.env
+.env.*
+
+# Editor / OS noise
+.vscode/
+.DS_Store
+Thumbs.db
